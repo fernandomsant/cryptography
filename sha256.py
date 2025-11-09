@@ -11,33 +11,23 @@ def rotl(n, x, w = 32):
     return ((x<<n) | (x>>(w-n))) % 2**w
 
 def ch(x, y, z):
-    return (x & y) ^ (~x & z) & 0xffffffff
+    return ((x & y) ^ ((~x & 0xffffffff) & z)) & 0xffffffff
 
 def maj(x, y, z):
-    return (x & y) ^ (x & z) ^ (y & z) & 0xffffffff
+    return ((x & y) ^ (x & z) ^ (y & z)) & 0xffffffff
 
 def bsig0(x):
-    return rotr(2, x) ^ rotr(13, x) ^ rotr(22, x) & 0xffffffff
+    return (rotr(2, x) ^ rotr(13, x) ^ rotr(22, x)) & 0xffffffff
 
 def bsig1(x):
-    return rotr(6, x) ^ rotr(11, x) ^ rotr(25, x) & 0xffffffff
+    return (rotr(6, x) ^ rotr(11, x) ^ rotr(25, x)) & 0xffffffff
 
 def ssig0(x):
-    return rotr(7, x) ^ rotr(18, x) ^ (x>>3) & 0xffffffff
+    return (rotr(7, x) ^ rotr(18, x) ^ (x>>3)) & 0xffffffff
 
 def ssig1(x):
-    return rotr(17, x) ^ rotr(19, x) ^ (x>>10) & 0xffffffff
+    return (rotr(17, x) ^ rotr(19, x) ^ (x>>10)) & 0xffffffff
 
-# primeiros 32 bits das partes fracionárias das raízes quadradas dos 8 primeiros primos representadas em 64 bits
-# H contém as 'hash values' iniciais
-H = [0x6a09e667,
-0xbb67ae85,
-0x3c6ef372,
-0xa54ff53a,
-0x510e527f,
-0x9b05688c,
-0x1f83d9ab,
-0x5be0cd19]
 
 # primeiros 32 bits das partes fracionárias das raízes cúbicas dos 64 primeiros primos representadas em 64 bits
 K = [0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,
@@ -65,7 +55,17 @@ class SHA256:
         self.message = message
 
 
-    def digest(self, encoding: str = 'utf-8') -> str:
+    def digest(self, encoding: str = 'utf-8') -> bytes:
+        # primeiros 32 bits das partes fracionárias das raízes quadradas dos 8 primeiros primos representadas em 64 bits
+        # H contém as 'hash values' iniciais
+        H = [0x6a09e667,
+        0xbb67ae85,
+        0x3c6ef372,
+        0xa54ff53a,
+        0x510e527f,
+        0x9b05688c,
+        0x1f83d9ab,
+        0x5be0cd19]
         # Convertemos a mensagem a fim de processá-la.
         b_array = bytearray(self.message.encode(encoding))
         m_len = 8 * len(b_array)
@@ -131,8 +131,4 @@ class SHA256:
             H[6] = (g + H[6]) & 0xffffffff
             H[7] = (h + H[7]) & 0xffffffff
         # Ao final, o resultado do hash é dado concatenando os hash values de 0 até 7
-        return ''.join(f"{x:08x}" for x in H)
-        
-
-sha256 = SHA256('texto antes do hashing')
-print(sha256.digest())
+        return b''.join([x.to_bytes(4) for x in H])
