@@ -1,9 +1,18 @@
 # A seguinte implementação de algoritmo criptográfico não deve ser usada em ambientes de produção,
 # seu objetivo é puramente demonstrativo.
 
+# Essa implementação levou
+# 3 minutos 28 segundos
+# para escrever
+# 1,339,392 bytes
+# cerca de 6,440 bytes/segundo, o que é extremamente lento
+# Existem diversos motivos algorítmicos para essa lentidão,
+# nem tudo é culpa do Python
+
 from typing import Literal
 from cryptography.sha256 import rotl, rotr, SHA256
 import io
+from itertools import chain
 # Calcula a paridade dos bits 1 do número representado em binário de tamanho 1 byte
 # Em resumo, essa função realiza o XOR com todos os bits na primeira "casa" binária,
 # tal qual retorna 1 caso haja número ímpar de 1's e 0 caso contrário. Ao final, ela retorna apenas
@@ -59,6 +68,14 @@ def ComputeSBox():
     return sbox
 
 SBOX = ComputeSBox()
+
+def ComputeInvSBox():
+    inv_sbox = [0] * 256
+    for i, b in enumerate(SBOX):
+        inv_sbox[b] = i
+    return inv_sbox
+
+INV_SBOX = ComputeInvSBox()
     
 
 def SubBytes(state):
@@ -105,7 +122,6 @@ def AddRoundKey(state, w, round):
     for i in range(16):
         state[i] ^= w[16*round + i]
 
-
 def SubWord(w):
     for i, b in enumerate(w):
         w[i] = SBOX[b]
@@ -123,9 +139,39 @@ def pad(input: bytes, block_size: int = 16):
     pad_len = block_size - (len(input) % block_size)
     return io.BytesIO(input + bytes([pad_len] * pad_len))
 
+def InvShiftRows(state):
+    t_state = list()
+    for i in range(16):
+        r = i % 4
+        c = i // 4
+        if r != 0:
+            t_state.append(state[r + 4*((c - shift(r))%4)])
+        else:
+            t_state.append(state[r + 4*c])
+    state[:] = t_state
+
+def InvSubBytes(state):
+    for index, b in enumerate(state):
+        state[index] = INV_SBOX[b]
+
+def InvMixColumns(state):
+    v = [0x0e, 0x0b, 0x0d, 0x09]
+    t_state = list()
+    for i in range(4):
+        w = state[4*i:4*(i+1)]
+        for _ in range(4):
+            b_s = 0
+            for j, b in enumerate(w):
+                b_s ^= gf_ml(b, v[j])
+            t_state.append(b_s)
+            v.insert(0, v.pop())
+    state[:] = t_state
+
 class AES:
 
     def __init__(self, key, key_length: Literal["128", "192", "256"] = "256"):
+        self.key_expansion = None
+        self.eq_key_expansion = None
         self.key_length = key_length
         key_hash = bytearray(SHA256(key).digest())
         match key_length:
@@ -143,6 +189,8 @@ class AES:
                 self.key = key_hash
 
     def KeyExpansion(self):
+        if self.key_expansion is not None:
+            return
         key = self.key
         w = list()
         for i in range(4*self.Nk):
@@ -157,6 +205,30 @@ class AES:
             for j in range(4):
                 w.append(w[4*(i - self.Nk) + j] ^ temp[j])
         self.key_expansion = w
+
+    def EqKeyExpansion(self):
+        if self.eq_key_expansion is not None:
+            return
+        key = self.key
+        w = list()
+        for i in range(4*self.Nk):
+            w.append(key[i])
+        for i in range(self.Nk, 4 * (self.Nr + 1)):
+            temp = w[4*(i-1):4*i]
+            if i % self.Nk == 0:
+                temp = [b1 ^ b2 for b1, b2 in zip(SubWord(RotWord(temp)), Rcon(i//self.Nk))]
+            elif self.Nk > 6 and i % self.Nk == 4:
+                temp = SubWord(temp)
+            for j in range(4):
+                w.append(w[4*(i - self.Nk) + j] ^ temp[j])
+        # Altera a dimensão de 'w' de 1 para 2, aplica a transformação InvMixColumns, e por fim planifica 'w',
+        # isto é, torna 'w' unidimensional novamente
+        # O ponto dessa transformação é a "distributiva" da função InvMixColumns com relação a operação XOR
+        w = [w[i:i+16] for i in range(0, len(w), 16)]
+        for i in range(1, self.Nr):
+            InvMixColumns(w[i])
+        w = list(chain.from_iterable(w))
+        self.eq_key_expansion = w
 
     def cipher_stream(self, stream: io.BufferedReader):
         self.KeyExpansion()
@@ -178,5 +250,53 @@ class AES:
             SubBytes(state)
             ShiftRows(state)
             AddRoundKey(state, w, self.Nr)
+
+            yield bytes(state)
+
+    # Ao descriptografar um determinado conteúdo, é necessário saber
+    # de antemão se o padding PKCS#7 está presente, e lidar com isso "por fora"
+    def inv_cipher_stream(self, stream: io.BufferedReader):
+        self.KeyExpansion()
+        w = self.key_expansion
+
+        while chunk := stream.read(16):
+            if len(chunk) < 16:
+                chunk = pad(chunk).read(16)
+
+            state = bytearray(chunk)
+            AddRoundKey(state, w, self.Nr)
+
+            for round in range(self.Nr-1, 0, -1):
+                InvShiftRows(state)
+                InvSubBytes(state)
+                AddRoundKey(state, w, round)
+                InvMixColumns(state)
+
+            InvShiftRows(state)
+            InvSubBytes(state)
+            AddRoundKey(state, w, 0)
+
+            yield bytes(state)
+    
+    def equivalent_inv_cipher_stream(self, stream:io.BufferedReader):
+        self.EqKeyExpansion()
+        w = self.eq_key_expansion
+
+        while chunk := stream.read(16):
+            if len(chunk) < 16:
+                chunk = pad(chunk).read(16)
+
+            state = bytearray(chunk)
+            AddRoundKey(state, w, self.Nr)
+
+            for round in range(self.Nr-1, 0, -1):
+                InvSubBytes(state)
+                InvShiftRows(state)
+                InvMixColumns(state)
+                AddRoundKey(state, w, round)
+
+            InvSubBytes(state)
+            InvShiftRows(state)
+            AddRoundKey(state, w, 0)
 
             yield bytes(state)
