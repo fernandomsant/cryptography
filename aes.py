@@ -2,9 +2,8 @@
 # seu objetivo é puramente demonstrativo.
 
 from typing import Literal
-from sha256 import rotl, rotr
-import copy
-
+from cryptography.sha256 import rotl, rotr, SHA256
+import io
 # Calcula a paridade dos bits 1 do número representado em binário de tamanho 1 byte
 # Em resumo, essa função realiza o XOR com todos os bits na primeira "casa" binária,
 # tal qual retorna 1 caso haja número ímpar de 1's e 0 caso contrário. Ao final, ela retorna apenas
@@ -53,7 +52,7 @@ def ComputeSBox():
         b_inv = gf_inv(b)
         s_rc = 0
         for i in range(8):
-            bi = parity(v & b_inv)
+            bi = parity(v & b_inv) # type: ignore
             s_rc += bi * 2**i
             v = rotl(1,v,8)
         sbox.append(s_rc^0x63)
@@ -87,7 +86,7 @@ def ShiftRows(state):
             t_state.append(state[r + 4*((c + shift(r))%4)])
         else:
             t_state.append(state[r + 4*c])
-    state = t_state
+    state[:] = t_state
 
 def MixColumns(state):
     v = [2, 3, 1, 1]
@@ -97,46 +96,87 @@ def MixColumns(state):
         for _ in range(4):
             b_s = 0
             for j, b in enumerate(w):
-                b_s += b * v[j]
-            b_s %= 2**8
+                b_s ^= gf_ml(b, v[j])
             t_state.append(b_s)
-            v = rotr(1,v,8)
-    state = t_state
+            v.insert(0, v.pop())
+    state[:] = t_state
 
-def AddRoundKey():
-    pass
+def AddRoundKey(state, w, round):
+    for i in range(16):
+        state[i] ^= w[16*round + i]
+
+
+def SubWord(w):
+    for i, b in enumerate(w):
+        w[i] = SBOX[b]
+    return w
+
+def RotWord(w: list):
+    w.append(w.pop(0))
+    return w
+
+def Rcon(i):
+    return list([(2**(i-1) % 2**8), 0, 0, 0])
+
+# Padrão PKCS#7 para padding do input, transformando-o em um bloco de 16 bytes (128 bits)
+def pad(input: bytes, block_size: int = 16):
+    pad_len = block_size - (len(input) % block_size)
+    return io.BytesIO(input + bytes([pad_len] * pad_len))
 
 class AES:
 
-    def __init__(self, key_length: Literal["128", "192", "256"] = "256"):
+    def __init__(self, key, key_length: Literal["128", "192", "256"] = "256"):
         self.key_length = key_length
+        key_hash = bytearray(SHA256(key).digest())
         match key_length:
             case "128":
                 self.Nk = 4
                 self.Nr = 10
+                self.key = key_hash[0:16]
             case "192":
                 self.Nk = 6
                 self.Nr = 12
+                self.key = key_hash[0:24]
             case "256":
                 self.Nk = 8
                 self.Nr = 14
+                self.key = key_hash
 
-    def cipher(self, input, ):
-
-        state = input
-
-        AddRoundKey()
-
-        for round in range(self.Nr):
-            SubBytes()
-            ShiftRows()
-            MixColumns()
-            AddRoundKey()
+    def KeyExpansion(self):
+        key = self.key
+        w = list()
+        for i in range(4*self.Nk):
+            w.append(key[i])
         
-        SubBytes()
-        ShiftRows()
-        AddRoundKey()
+        for i in range(self.Nk, 4 * (self.Nr + 1)):
+            temp = w[4*(i-1):4*i]
+            if i % self.Nk == 0:
+                temp = [b1 ^ b2 for b1, b2 in zip(SubWord(RotWord(temp)), Rcon(i//self.Nk))]
+            elif self.Nk > 6 and i % self.Nk == 4:
+                temp = SubWord(temp)
+            for j in range(4):
+                w.append(w[4*(i - self.Nk) + j] ^ temp[j])
+        self.key_expansion = w
 
-        return state
+    def cipher_stream(self, stream: io.BufferedReader):
+        self.KeyExpansion()
+        w = self.key_expansion
 
-        pass
+        while chunk := stream.read(16):
+            if len(chunk) < 16:
+                chunk = pad(chunk).read(16)
+
+            state = bytearray(chunk)
+            AddRoundKey(state, w, 0)
+
+            for round in range(1, self.Nr):
+                SubBytes(state)
+                ShiftRows(state)
+                MixColumns(state)
+                AddRoundKey(state, w, round)
+
+            SubBytes(state)
+            ShiftRows(state)
+            AddRoundKey(state, w, self.Nr)
+
+            yield bytes(state)
