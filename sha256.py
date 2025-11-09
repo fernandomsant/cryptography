@@ -5,10 +5,10 @@
 # Elas servem para fornecer imprevisibilidade ao resultado e minimizar colisões
 
 def rotr(n, x, w = 32):
-    return ((x>>n) | (x<<(w-n))) & 0xffffffff
+    return ((x>>n) | (x<<(w-n))) % 2**w
 
 def rotl(n, x, w = 32):
-    return ((x<<n) | (x>>(w-n))) & 0xffffffff
+    return ((x<<n) | (x>>(w-n))) % 2**w
 
 def ch(x, y, z):
     return (x & y) ^ (~x & z) & 0xffffffff
